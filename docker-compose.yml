@@ -48,8 +48,40 @@ services:
       - rabbitmq
     networks: [backend]
 
-  # Lesha's services (monitor, checker, notifier) and Katya's status service
-  # are added here at integration.
+  monitor:
+    build: ./services/monitor
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      DB_PATH: /data/monitor.db
+    volumes:
+      - monitor-data:/data
+    depends_on:
+      - rabbitmq
+    networks: [backend]
+
+  checker:
+    build: ./services/checker
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+    depends_on:
+      - rabbitmq
+    networks: [backend]
+
+  notifier:
+    build: ./services/notifier
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+    depends_on:
+      - rabbitmq
+    networks: [backend]
+
+  # Test website for the demo: docker compose stop testsite / start testsite
+  testsite:
+    image: nginx:1.27-alpine
+    networks: [backend]  
 
 networks:
   frontend:
@@ -58,3 +90,4 @@ networks:
 volumes:
   auth-data:
   status-data:
+  monitor-data:
