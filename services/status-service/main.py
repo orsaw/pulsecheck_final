@@ -1,23 +1,32 @@
-# main.py
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter
-from fastapi.responses import Response
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
-from sqlalchemy.orm import declarative_base, sessionmaker
-import pika, json, threading, time
+# main.py — Status Service (author: Katya; adapted for Docker by Ulyana)
+import json
+import os
+import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime
-import uvicorn
 
-# --- 1. НАСТРОЙКА БАЗЫ ДАННЫХ ---
-# Пока используем SQLite для простоты локальной разработки
-SQLALCHEMY_DATABASE_URL = "sqlite:///./status.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+import pika
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
+from sqlalchemy import Column, DateTime, Float, Integer, String, create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+# --- 0. SETTINGS (from environment variables) ---
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+DB_PATH = os.getenv("DB_PATH", "./status.db")
+
+# --- 1. DATABASE ---
+os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Модель таблицы истории
+
 class CheckResult(Base):
+    """History: one row per check."""
     __tablename__ = "check_results"
     id = Column(Integer, primary_key=True, index=True)
     target_id = Column(String, index=True)
@@ -25,101 +34,123 @@ class CheckResult(Base):
     response_time_ms = Column(Integer)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
-# Модель текущего состояния (для быстрого доступа)
+
 class TargetStatus(Base):
+    """Current state: one row per target."""
     __tablename__ = "target_statuses"
     target_id = Column(String, primary_key=True, index=True)
     current_status = Column(String)
     last_check = Column(DateTime, default=datetime.utcnow)
     uptime_percentage = Column(Float, default=100.0)
 
+
 Base.metadata.create_all(bind=engine)
 
-# --- 2. НАСТРОЙКА МЕТРИК ---
-CHECKS_RECEIVED = Counter('checks_received_total', 'Total results consumed from queue')
-STATUS_CHANGES = Counter('status_changes_total', 'UP<->DOWN transitions')
+# --- 2. METRICS ---
+CHECKS_RECEIVED = Counter("checks_received_total", "Total results consumed from queue")
+STATUS_CHANGES = Counter("status_changes_total", "UP<->DOWN transitions")
 
-# --- 3. СЛУШАТЕЛЬ ОЧЕРЕДИ (RABBITMQ) ---
-def process_queue():
-    def callback(ch, method, properties, body):
+
+# --- 3. RABBITMQ ---
+def rabbit_connection():
+    """Connect to RabbitMQ. If it is not ready yet, wait and try again."""
+    while True:
         try:
-            data = json.loads(body)
-            target_id = data.get("target_id")
-            new_status = data.get("status")
-            
-            CHECKS_RECEIVED.inc()
-            db = SessionLocal()
-            
-            # 1. Сохраняем историю
-            history = CheckResult(
-                target_id=target_id, 
-                status=new_status, 
-                response_time_ms=data.get("response_time_ms", 0),
-                timestamp=datetime.utcnow()
-            )
-            db.add(history)
-            
-            # 2. Проверяем смену статуса
-            target = db.query(TargetStatus).filter(TargetStatus.target_id == target_id).first()
-            if not target:
-                # Первая проверка
-                target = TargetStatus(target_id=target_id, current_status=new_status)
-                db.add(target)
-            else:
-                if target.current_status != new_status:
-                    # ОПА! СТАТУС СМЕНИЛСЯ!
-                    print(f"🚨 ALERT: Target {target_id} changed {target.current_status} -> {new_status}")
-                    STATUS_CHANGES.inc()
-                    
-                    # --- ОТПРАВЛЯЕМ СОБЫТИЕ ДЛЯ ЛЁШИ (Notifier) ---
-                    event = {
-                        "target_id": target_id,
-                        "old_status": target.current_status,
-                        "new_status": new_status,
-                        "changed_at": datetime.utcnow().isoformat() + "Z"
-                    }
-                    try:
-                        pub_conn = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-                        pub_ch = pub_conn.channel()
-                        pub_ch.queue_declare(queue='status.changed')
-                        pub_ch.basic_publish(exchange='', routing_key='status.changed', body=json.dumps(event))
-                        pub_conn.close()
-                        print(f" 📤 Событие status.changed отправлено в RabbitMQ!")
-                    except Exception as e:
-                        print(f" Ошибка отправки события: {e}")
-                    # -----------------------------------------------
-                    
-                    target.current_status = new_status
-                    target.last_check = datetime.utcnow()
-            
-            db.commit()
-            db.close()
-        except Exception as e:
-            print(f"Error processing message: {e}")
+            return pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
+        except pika.exceptions.AMQPConnectionError:
+            print("RabbitMQ is not ready, retry in 3 s")
+            time.sleep(3)
 
-    connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-    channel = connection.channel()
-    channel.queue_declare(queue='check.result')
-    channel.basic_consume(queue='check.result', on_message_callback=callback, auto_ack=True)
-    print(' [*] Status Service ждет сообщений из RabbitMQ. Для выхода нажмите CTRL+C')
-    channel.start_consuming()
 
-# --- 4. API ДЛЯ ДАШБОРДА (FastAPI) ---
-app = FastAPI(title="Status Service API")
+def callback(ch, method, properties, body):
+    """Called for every check.result message."""
+    db = SessionLocal()
+    try:
+        data = json.loads(body)
+        target_id = str(data.get("target_id"))
+        new_status = data.get("status")
+        CHECKS_RECEIVED.inc()
 
-# Разрешаем CORS, чтобы наш HTML дашборд мог стучаться к API
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-)
+        # 1. Save history
+        db.add(CheckResult(
+            target_id=target_id,
+            status=new_status,
+            response_time_ms=data.get("response_time_ms") or 0,
+            timestamp=datetime.utcnow(),
+        ))
+
+        # 2. Update current state and detect a status change
+        target = db.query(TargetStatus).filter(TargetStatus.target_id == target_id).first()
+        if target is None:
+            db.add(TargetStatus(target_id=target_id, current_status=new_status))
+        else:
+            if target.current_status != new_status:
+                print(f"🚨 ALERT: Target {target_id} changed {target.current_status} -> {new_status}")
+                STATUS_CHANGES.inc()
+                event = {
+                    "target_id": target_id,
+                    "old_status": target.current_status,
+                    "new_status": new_status,
+                    "changed_at": datetime.utcnow().isoformat() + "Z",
+                }
+                ch.queue_declare(queue="status.changed", durable=True)
+                ch.basic_publish(exchange="", routing_key="status.changed", body=json.dumps(event))
+                print(" 📤 status.changed sent")
+                target.current_status = new_status
+            target.last_check = datetime.utcnow()
+
+        db.commit()
+    except Exception as e:
+        print(f"Error processing message: {e}")
+    finally:
+        db.close()
+
+
+def process_queue():
+    """Listen to check.result forever. Reconnect if the connection is lost."""
+    while True:
+        try:
+            connection = rabbit_connection()
+            channel = connection.channel()
+            channel.queue_declare(queue="check.result", durable=True)
+            channel.basic_consume(queue="check.result", on_message_callback=callback, auto_ack=True)
+            print(" [*] Status Service is waiting for messages")
+            channel.start_consuming()
+        except pika.exceptions.AMQPError as e:
+            print(f"RabbitMQ connection lost: {e}. Reconnecting in 3 s")
+            time.sleep(3)
+
+
+# --- 4. API ---
+@asynccontextmanager
+async def lifespan(app):
+    threading.Thread(target=process_queue, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Status Service API", lifespan=lifespan)
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "service": "status"}
+
 
 @app.get("/metrics")
 def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/api/status/")
+def list_statuses():
+    db = SessionLocal()
+    targets = db.query(TargetStatus).all()
+    db.close()
+    return [
+        {"target_id": t.target_id, "status": t.current_status, "last_check": t.last_check}
+        for t in targets
+    ]
+
 
 @app.get("/api/status/{target_id}")
 def get_status(target_id: str):
@@ -128,17 +159,8 @@ def get_status(target_id: str):
     db.close()
     if not target:
         raise HTTPException(status_code=404, detail="Target not found")
-    return {
-        "target_id": target.target_id,
-        "status": target.current_status,
-        "last_check": target.last_check
-    }
+    return {"target_id": target.target_id, "status": target.current_status, "last_check": target.last_check}
 
-# Запускаем слушатель очереди в отдельном потоке при старте сервиса
-@app.on_event("startup")
-def startup_event():
-    thread = threading.Thread(target=process_queue, daemon=True)
-    thread.start()
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8003)

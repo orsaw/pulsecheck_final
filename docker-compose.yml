@@ -36,6 +36,18 @@ services:
       - "127.0.0.1:15672:15672"
     networks: [backend]
 
+  status:
+    build: ./services/status-service
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      DB_PATH: /data/status.db
+    volumes:
+      - status-data:/data
+    depends_on:
+      - rabbitmq
+    networks: [backend]
+
   # Lesha's services (monitor, checker, notifier) and Katya's status service
   # are added here at integration.
 
@@ -45,3 +57,4 @@ networks:
 
 volumes:
   auth-data:
+  status-data:
