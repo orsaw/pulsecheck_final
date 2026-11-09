@@ -1,55 +1,189 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>PulseCheck Dashboard</title>
-    <style>
-        body { font-family: sans-serif; background: #f4f4f9; padding: 20px; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); max-width: 600px; }
-        .status-up { color: white; background: #28a745; padding: 5px 10px; border-radius: 4px; font-weight: bold; }
-        .status-down { color: white; background: #dc3545; padding: 5px 10px; border-radius: 4px; font-weight: bold; }
-        .row { display: flex; justify-content: space-between; padding: 15px 0; border-bottom: 1px solid #eee; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PulseCheck Dashboard</title>
+  <style>
+    body { font-family: sans-serif; background: #f4f4f9; padding: 20px; }
+    .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); max-width: 720px; margin-bottom: 16px; }
+    .status-up { color: white; background: #28a745; padding: 5px 10px; border-radius: 4px; font-weight: bold; }
+    .status-down { color: white; background: #dc3545; padding: 5px 10px; border-radius: 4px; font-weight: bold; }
+    .status-unknown { color: white; background: #6c757d; padding: 5px 10px; border-radius: 4px; font-weight: bold; }
+    .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #eee; }
+    .muted { color: #666; font-size: 0.9em; }
+    .error { color: #dc3545; }
+    .hidden { display: none; }
+    input { padding: 6px; margin: 4px 4px 4px 0; }
+    button { padding: 6px 12px; cursor: pointer; }
+  </style>
 </head>
 <body>
+
+  <!-- Login screen -->
+  <div id="login-view" class="card">
+    <h2>PulseCheck - Login</h2>
+    <input id="username" placeholder="username">
+    <input id="password" type="password" placeholder="password (8+ chars)">
+    <button onclick="login()">Log in</button>
+    <button onclick="register()">Register</button>
+    <p id="login-msg" class="muted"></p>
+  </div>
+
+  <!-- Main screen -->
+  <div id="app-view" class="hidden">
     <div class="card">
-        <h2>PulseCheck Statuses</h2>
-        <div id="targets-container">
-            <p>Загрузка данных...</p>
-        </div>
+      <div class="row" style="border: none">
+        <h2 style="margin: 0">PulseCheck Statuses</h2>
+        <div><span id="who" class="muted"></span> <button onclick="logout()">Log out</button></div>
+      </div>
+      <div id="targets-container"><p>Loading...</p></div>
     </div>
 
-    <script>
-        const API_URL = 'http://localhost:8003/api/status/demo-target-1'; // Пока бьем напрямую в свой сервис
+    <div class="card">
+      <h3>Add a target</h3>
+      <input id="t-name" placeholder="name">
+      <input id="t-url" placeholder="http://example.com" size="30">
+      <input id="t-interval" type="number" value="30" min="10" max="3600" style="width: 70px"> s
+      <button onclick="addTarget()">Add</button>
+      <p id="add-msg" class="muted"></p>
+    </div>
+  </div>
 
-        async function fetchStatus() {
-            try {
-                const response = await fetch(API_URL);
-                if (!response.ok) throw new Error('Network response was not ok');
-                const data = await response.json();
-                
-                const container = document.getElementById('targets-container');
-                const isUp = data.status === 'UP';
-                
-                container.innerHTML = `
-                    <div class="row">
-                        <div><strong>${data.target_id}</strong></div>
-                        <div>
-                            <span class="${isUp ? 'status-up' : 'status-down'}">${data.status}</span>
-                        </div>
-                    </div>
-                    <div style="margin-top: 10px; font-size: 0.9em; color: #666;">
-                        Последняя проверка: ${new Date(data.last_check).toLocaleTimeString()}
-                    </div>
-                `;
-            } catch (error) {
-                document.getElementById('targets-container').innerHTML = '<p style="color:red">Ошибка подключения к API</p>';
-            }
-        }
+<script>
+  // All requests go through the gateway (same address), never to services directly
+  const AUTH = '/api/auth', MONITOR = '/api/monitor', STATUS = '/api/status';
+  let timer = null;
 
-        // 2C.5 Автообновление раз в 5 секунд
-        fetchStatus();
-        setInterval(fetchStatus, 5000);
-    </script>
+  // --- Helpers ---
+  // Escape HTML: protects the page from XSS (a target name like <script>...)
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+      ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+  }
+  function val(id) { return document.getElementById(id).value.trim(); }
+  function msg(id, text, isError) {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.className = isError ? 'error' : 'muted';
+  }
+  function token() { return sessionStorage.getItem('token'); }
+
+  // Every API call adds the token. 401 = token expired -> back to login
+  async function api(path, options = {}) {
+    options.headers = Object.assign({'Content-Type': 'application/json'}, options.headers || {});
+    if (token()) options.headers['Authorization'] = 'Bearer ' + token();
+    const res = await fetch(path, options);
+    if (res.status === 401) { logout(); throw new Error('Session expired, please log in again'); }
+    return res;
+  }
+
+  // --- Login / register / logout ---
+  async function login() {
+    const res = await fetch(AUTH + '/login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username: val('username'), password: val('password')})
+    });
+    if (res.status === 429) return msg('login-msg', 'Too many attempts, wait a minute', true);
+    if (!res.ok) return msg('login-msg', 'Wrong username or password', true);
+    const data = await res.json();
+    sessionStorage.setItem('token', data.access_token);
+    sessionStorage.setItem('username', val('username'));
+    showApp();
+  }
+
+  async function register() {
+    const res = await fetch(AUTH + '/register', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username: val('username'), password: val('password')})
+    });
+    if (res.status === 201) return msg('login-msg', 'Registered! Now log in.', false);
+    if (res.status === 409) return msg('login-msg', 'This username is taken', true);
+    msg('login-msg', 'Username: 3-32 chars, password: 8+ chars', true);
+  }
+
+  function logout() {
+    sessionStorage.clear();
+    clearInterval(timer);
+    document.getElementById('app-view').classList.add('hidden');
+    document.getElementById('login-view').classList.remove('hidden');
+  }
+
+  function showApp() {
+    document.getElementById('login-view').classList.add('hidden');
+    document.getElementById('app-view').classList.remove('hidden');
+    document.getElementById('who').textContent = sessionStorage.getItem('username') || '';
+    refresh();
+    clearInterval(timer);
+    timer = setInterval(refresh, 5000);   // auto refresh every 5 s
+  }
+
+  // --- Targets ---
+  async function refresh() {
+    const container = document.getElementById('targets-container');
+    try {
+      // Statuses from Status service (Katya)
+      const sRes = await api(STATUS + '/');
+      const statuses = sRes.ok ? await sRes.json() : [];
+      const byId = {};
+      statuses.forEach(s => byId[String(s.target_id)] = s);
+
+      // Names and URLs from Monitor service (Lesha). If it is not ready, show raw statuses.
+      let targets = null;
+      try {
+        const mRes = await api(MONITOR + '/targets');
+        if (mRes.ok) targets = await mRes.json();
+      } catch (e) { if (!token()) return; }
+
+      const rows = targets
+        ? targets.map(t => ({name: t.name, url: t.url, s: byId[String(t.id)]}))
+        : statuses.map(s => ({name: s.target_id, url: '', s: s}));
+      render(rows, targets === null);
+    } catch (e) {
+      container.innerHTML = '<p class="error">' + esc(e.message) + '</p>';
+    }
+  }
+
+  function render(rows, monitorMissing) {
+    const container = document.getElementById('targets-container');
+    let html = rows.length ? '' : '<p class="muted">No targets yet. Add one below.</p>';
+    for (const r of rows) {
+      const st = r.s ? r.s.status : 'UNKNOWN';
+      const cls = st === 'UP' ? 'status-up' : (st === 'DOWN' ? 'status-down' : 'status-unknown');
+      // Status service returns UTC time without "Z" -> add it, so the browser shows local time
+      const last = (r.s && r.s.last_check) ? new Date(r.s.last_check + 'Z').toLocaleTimeString() : '-';
+      html += `
+        <div class="row">
+          <div>
+            <strong>${esc(r.name)}</strong><br>
+            <span class="muted">${esc(r.url)} · last check: ${esc(last)}</span>
+          </div>
+          <span class="${cls}">${esc(st)}</span>
+        </div>`;
+    }
+    if (monitorMissing) html += '<p class="muted">Monitor service is not available - showing raw statuses.</p>';
+    container.innerHTML = html;
+  }
+
+  async function addTarget() {
+    try {
+      const res = await api(MONITOR + '/targets', {
+        method: 'POST',
+        body: JSON.stringify({name: val('t-name'), url: val('t-url'), interval_sec: Number(val('t-interval'))})
+      });
+      if (res.ok) {
+        msg('add-msg', 'Target added', false);
+        refresh();
+      } else {
+        msg('add-msg', 'Could not add the target (error ' + res.status + ')', true);
+      }
+    } catch (e) {
+      msg('add-msg', e.message, true);
+    }
+  }
+
+  // If a token is already saved in this tab, open the app directly
+  if (token()) showApp();
+</script>
 </body>
 </html>
