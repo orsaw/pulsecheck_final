@@ -1,9 +1,3 @@
-"""Monitor service.
-
-Stores monitoring targets in SQLite, gives a REST API to manage them
-and, in a background thread, publishes 'check.task' messages to RabbitMQ
-when a target is due for a check.
-"""
 import json
 import logging
 import os
@@ -26,8 +20,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("monitor")
 
-
-# ---------------------------------------------------------------- database
 
 def db():
     conn = sqlite3.connect(DB_PATH)
@@ -56,19 +48,12 @@ def all_targets():
     return [dict(r) for r in rows]
 
 
-# --------------------------------------------------------------- scheduler
-
 def run_once(publish, due, now=None):
-    """One scheduler tick: publish tasks for targets that are due.
-
-    publish(task_dict) sends one task. due maps target id -> time of the
-    next check. A target that is not in `due` yet is checked at once.
-    """
     now = time.monotonic() if now is None else now
     targets = all_targets()
     ids = {t["id"] for t in targets}
     for stale in [i for i in due if i not in ids]:
-        del due[stale]  # target was deleted
+        del due[stale]
     for t in targets:
         if due.get(t["id"], 0) <= now:
             publish({
@@ -76,7 +61,6 @@ def run_once(publish, due, now=None):
                 "url": t["url"],
                 "scheduled_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             })
-            # Set the next time only after a successful publish.
             due[t["id"]] = now + t["interval_sec"]
 
 
@@ -102,8 +86,8 @@ def scheduler_loop(rabbitmq_url: str, stop: threading.Event):
 
             while not stop.is_set():
                 run_once(publish, due)
-                connection.sleep(1)  # waits 1 s and keeps the connection alive
-        except Exception as exc:  # keep the thread alive, whatever happens
+                connection.sleep(1)
+        except Exception as exc:
             log.warning("Scheduler error: %s. Retry in 3 s", exc)
             time.sleep(3)
         finally:
@@ -113,8 +97,6 @@ def scheduler_loop(rabbitmq_url: str, stop: threading.Event):
                 except Exception:
                     pass
 
-
-# --------------------------------------------------------------------- API
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -148,7 +130,6 @@ class TargetIn(BaseModel):
 
 
 def current_user(x_user_id: str | None) -> str:
-    """User id comes from the header set by the gateway."""
     if not x_user_id or not x_user_id.strip():
         raise HTTPException(status_code=401, detail="X-User-Id header is missing")
     return x_user_id.strip()

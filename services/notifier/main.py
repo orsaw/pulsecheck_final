@@ -1,8 +1,3 @@
-"""Notifier service.
-
-Listens to the 'status.changed' queue (sent by Status Service)
-and writes a human-readable alert line to the log.
-"""
 import json
 import logging
 import os
@@ -22,7 +17,6 @@ log = logging.getLogger("notifier")
 
 
 def format_alert(event: dict) -> str:
-    """Turn a status.changed message into one log line."""
     target = event.get("target_id", "?")
     old = event.get("old_status", "?")
     new = event.get("new_status", "?")
@@ -39,7 +33,6 @@ def on_message(channel, method, properties, body):
         event = json.loads(body)
         log.info(format_alert(event))
     except (ValueError, AttributeError):
-        # Bad message: log it and drop it, otherwise it would loop forever.
         log.error("Bad message, skipped: %r", body)
     channel.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -54,7 +47,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, *args):
-        pass  # keep the log clean
+        pass
 
 
 def start_health_server():

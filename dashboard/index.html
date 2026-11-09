@@ -20,7 +20,6 @@
 </head>
 <body>
 
-  <!-- Login screen -->
   <div id="login-view" class="card">
     <h2>PulseCheck - Login</h2>
     <input id="username" placeholder="username">
@@ -30,7 +29,6 @@
     <p id="login-msg" class="muted"></p>
   </div>
 
-  <!-- Main screen -->
   <div id="app-view" class="hidden">
     <div class="card">
       <div class="row" style="border: none">
@@ -51,12 +49,9 @@
   </div>
 
 <script>
-  // All requests go through the gateway (same address), never to services directly
   const AUTH = '/api/auth', MONITOR = '/api/monitor', STATUS = '/api/status';
   let timer = null;
 
-  // --- Helpers ---
-  // Escape HTML: protects the page from XSS (a target name like <script>...)
   function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c =>
       ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
@@ -69,7 +64,6 @@
   }
   function token() { return sessionStorage.getItem('token'); }
 
-  // Every API call adds the token. 401 = token expired -> back to login
   async function api(path, options = {}) {
     options.headers = Object.assign({'Content-Type': 'application/json'}, options.headers || {});
     if (token()) options.headers['Authorization'] = 'Bearer ' + token();
@@ -78,7 +72,6 @@
     return res;
   }
 
-  // --- Login / register / logout ---
   async function login() {
     const res = await fetch(AUTH + '/login', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -115,20 +108,17 @@
     document.getElementById('who').textContent = sessionStorage.getItem('username') || '';
     refresh();
     clearInterval(timer);
-    timer = setInterval(refresh, 5000);   // auto refresh every 5 s
+    timer = setInterval(refresh, 5000);
   }
 
-  // --- Targets ---
   async function refresh() {
     const container = document.getElementById('targets-container');
     try {
-      // Statuses from Status service (Katya)
       const sRes = await api(STATUS + '/');
       const statuses = sRes.ok ? await sRes.json() : [];
       const byId = {};
       statuses.forEach(s => byId[String(s.target_id)] = s);
 
-      // Names and URLs from Monitor service (Lesha). If it is not ready, show raw statuses.
       let targets = null;
       try {
         const mRes = await api(MONITOR + '/targets');
@@ -150,7 +140,6 @@
     for (const r of rows) {
       const st = r.s ? r.s.status : 'UNKNOWN';
       const cls = st === 'UP' ? 'status-up' : (st === 'DOWN' ? 'status-down' : 'status-unknown');
-      // Status service returns UTC time without "Z" -> add it, so the browser shows local time
       const last = (r.s && r.s.last_check) ? new Date(r.s.last_check + 'Z').toLocaleTimeString() : '-';
       html += `
         <div class="row">
@@ -182,7 +171,6 @@
     }
   }
 
-  // If a token is already saved in this tab, open the app directly
   if (token()) showApp();
 </script>
 </body>

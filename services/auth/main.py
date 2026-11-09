@@ -7,7 +7,6 @@ import jwt
 from fastapi import FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
-# --- Settings (from environment variables, set in docker-compose) ---
 DB_PATH = os.getenv("DB_PATH", "/data/auth.db")
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_EXPIRES_MIN = int(os.getenv("JWT_EXPIRES_MIN", "60"))
@@ -15,7 +14,6 @@ JWT_EXPIRES_MIN = int(os.getenv("JWT_EXPIRES_MIN", "60"))
 app = FastAPI(title="PulseCheck Auth")
 
 
-# --- Database ---
 def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -32,13 +30,11 @@ with db() as conn:
     )
 
 
-# --- Input format ---
 class Credentials(BaseModel):
     username: str = Field(min_length=3, max_length=32)
     password: str = Field(min_length=8, max_length=72)
 
 
-# --- Helper: check the token ---
 def decode_token(authorization: str | None) -> dict:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
@@ -49,7 +45,6 @@ def decode_token(authorization: str | None) -> dict:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
-# --- Endpoints ---
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "auth"}

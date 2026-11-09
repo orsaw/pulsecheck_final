@@ -1,7 +1,6 @@
 import pika, json, random, time
 from datetime import datetime
 
-# Подключаемся к локальному RabbitMQ
 connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
 channel = connection.channel()
 channel.queue_declare(queue='check.result')
@@ -9,7 +8,6 @@ channel.queue_declare(queue='check.result')
 print(" [*] Фейковый паблишер запущен. Отправляем данные раз в 5 секунд...")
 
 while True:
-    # Имитируем, что сайт иногда падает (20% шанс)
     status = "DOWN" if random.random() < 0.2 else "UP"
 
     msg = {

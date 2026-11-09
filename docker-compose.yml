@@ -78,7 +78,6 @@ services:
       - rabbitmq
     networks: [backend]
 
-  # Test website for the demo: docker compose stop testsite / start testsite
   testsite:
     image: nginx:1.27-alpine
     networks: [backend]  

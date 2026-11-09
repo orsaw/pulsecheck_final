@@ -1,4 +1,3 @@
-# main.py — Status Service (author: Katya; adapted for Docker by Ulyana)
 import json
 import os
 import threading
@@ -14,11 +13,9 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
 from sqlalchemy import Column, DateTime, Float, Integer, String, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# --- 0. SETTINGS (from environment variables) ---
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 DB_PATH = os.getenv("DB_PATH", "./status.db")
 
-# --- 1. DATABASE ---
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -26,7 +23,6 @@ Base = declarative_base()
 
 
 class CheckResult(Base):
-    """History: one row per check."""
     __tablename__ = "check_results"
     id = Column(Integer, primary_key=True, index=True)
     target_id = Column(String, index=True)
@@ -36,7 +32,6 @@ class CheckResult(Base):
 
 
 class TargetStatus(Base):
-    """Current state: one row per target."""
     __tablename__ = "target_statuses"
     target_id = Column(String, primary_key=True, index=True)
     current_status = Column(String)
@@ -46,14 +41,11 @@ class TargetStatus(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# --- 2. METRICS ---
 CHECKS_RECEIVED = Counter("checks_received_total", "Total results consumed from queue")
 STATUS_CHANGES = Counter("status_changes_total", "UP<->DOWN transitions")
 
 
-# --- 3. RABBITMQ ---
 def rabbit_connection():
-    """Connect to RabbitMQ. If it is not ready yet, wait and try again."""
     while True:
         try:
             return pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
@@ -63,7 +55,6 @@ def rabbit_connection():
 
 
 def callback(ch, method, properties, body):
-    """Called for every check.result message."""
     db = SessionLocal()
     try:
         data = json.loads(body)
@@ -71,7 +62,6 @@ def callback(ch, method, properties, body):
         new_status = data.get("status")
         CHECKS_RECEIVED.inc()
 
-        # 1. Save history
         db.add(CheckResult(
             target_id=target_id,
             status=new_status,
@@ -79,13 +69,12 @@ def callback(ch, method, properties, body):
             timestamp=datetime.utcnow(),
         ))
 
-        # 2. Update current state and detect a status change
         target = db.query(TargetStatus).filter(TargetStatus.target_id == target_id).first()
         if target is None:
             db.add(TargetStatus(target_id=target_id, current_status=new_status))
         else:
             if target.current_status != new_status:
-                print(f"🚨 ALERT: Target {target_id} changed {target.current_status} -> {new_status}")
+                print(f"ALERT: Target {target_id} changed {target.current_status} -> {new_status}")
                 STATUS_CHANGES.inc()
                 event = {
                     "target_id": target_id,
@@ -95,7 +84,7 @@ def callback(ch, method, properties, body):
                 }
                 ch.queue_declare(queue="status.changed", durable=True)
                 ch.basic_publish(exchange="", routing_key="status.changed", body=json.dumps(event))
-                print(" 📤 status.changed sent")
+                print(" status.changed sent")
                 target.current_status = new_status
             target.last_check = datetime.utcnow()
 
@@ -107,7 +96,6 @@ def callback(ch, method, properties, body):
 
 
 def process_queue():
-    """Listen to check.result forever. Reconnect if the connection is lost."""
     while True:
         try:
             connection = rabbit_connection()
@@ -121,7 +109,6 @@ def process_queue():
             time.sleep(3)
 
 
-# --- 4. API ---
 @asynccontextmanager
 async def lifespan(app):
     threading.Thread(target=process_queue, daemon=True).start()

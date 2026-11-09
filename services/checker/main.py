@@ -1,10 +1,3 @@
-"""Checker service.
-
-Takes a task from the 'check.task' queue, makes an HTTP GET request
-to the target URL and publishes the result to 'check.result'.
-Many copies can run at the same time: they all read one queue
-and RabbitMQ gives each task to only one of them.
-"""
 import json
 import logging
 import os
@@ -32,7 +25,6 @@ def now_iso() -> str:
 
 
 def error_text(exc: Exception) -> str:
-    """Short human-readable error for the dashboard."""
     if isinstance(exc, requests.exceptions.Timeout):
         return "timeout"
     text = str(exc).lower()
@@ -49,7 +41,6 @@ def error_text(exc: Exception) -> str:
 
 
 def check_url(url: str) -> dict:
-    """Make one HTTP check. Returns the fields of check.result."""
     if not isinstance(url, str) or not url.startswith(("http://", "https://")):
         return {"status": "DOWN", "response_time_ms": 0, "error": "invalid url"}
     started = time.monotonic()
@@ -96,8 +87,6 @@ def on_task(channel, method, properties, body):
         body=json.dumps(message),
         properties=pika.BasicProperties(delivery_mode=2),
     )
-    # Ack only after the result is published: if we crash before,
-    # RabbitMQ gives the task to another checker.
     channel.basic_ack(delivery_tag=method.delivery_tag)
     log.info("target=%s url=%s -> %s (%s ms) %s", target_id, url,
              message["status"], message["response_time_ms"],
