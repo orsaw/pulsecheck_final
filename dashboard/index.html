@@ -156,7 +156,7 @@
         <div class="row">
           <div>
             <strong>${esc(r.name)}</strong><br>
-            <span class="muted">${esc(r.url)} · last check: ${esc(last)}</span>
+            <span class="muted">${r.url ? esc(r.url) + " · " : ""}last check: ${esc(last)}</span>
           </div>
           <span class="${cls}">${esc(st)}</span>
         </div>`;
