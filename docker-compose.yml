@@ -1,0 +1,47 @@
+name: pulsecheck
+
+services:
+
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./gateway/certs:/etc/nginx/certs:ro
+      - ./dashboard:/usr/share/nginx/html:ro
+    depends_on:
+      - auth
+    networks: [frontend, backend]
+
+  auth:
+    build: ./services/auth
+    restart: unless-stopped
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_MIN: ${JWT_EXPIRES_MIN}
+    volumes:
+      - auth-data:/data
+    networks: [backend]
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "127.0.0.1:15672:15672"
+    networks: [backend]
+
+  # Lesha's services (monitor, checker, notifier) and Katya's status service
+  # are added here at integration.
+
+networks:
+  frontend:
+  backend:
+
+volumes:
+  auth-data:
